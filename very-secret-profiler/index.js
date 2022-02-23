@@ -1,4 +1,5 @@
 const shell = require("shelljs");
+const mapValues = require("lodash/mapValues");
 
 const executeCommand = (command) => {
   return shell.exec(command, { silent: true }).stdout;
@@ -73,6 +74,7 @@ const pollFpsUsage = (bundleId) => {
   // gfxinfo is one way but we won't get polling, just a final report
   // one of the caveats is Flutter won't be supported
   // https://github.com/flutter/flutter/issues/91406
+  // gfxinfo framestats with HWUI rendering in gfxinfo is also a possibility, since we get frame time
 };
 
 const JS_THREAD_PROCESS_NAME = "(mqt_js)";
@@ -102,7 +104,7 @@ const getSubProcessesStats = (pidId) => {
     });
 };
 
-const pollCpuPerCoreUsage = (pidId) => {
+const pollCpuPerCoreUsage = (pidId, dataCallback) => {
   let previousTotalCpuTimePerProcessId = {};
 
   const TIME_INTERVAL_S = 0.5;
@@ -117,17 +119,21 @@ const pollCpuPerCoreUsage = (pidId) => {
     const subProcessesStats = getSubProcessesStats(pidId);
 
     const TICKS_FOR_TIME_INTERVAL = SYSTEM_TICK_IN_ONE_SECOND * TIME_INTERVAL_S;
+    const toPercentage = (value) => (value * 100) / TICKS_FOR_TIME_INTERVAL;
 
     const groupCpuUsage = (groupByIteratee) =>
-      subProcessesStats.reduce(
-        (aggr, stat) => ({
-          ...aggr,
-          [groupByIteratee(stat)]:
-            (aggr[groupByIteratee(stat)] || 0) +
-            stat.totalCpuTime -
-            (previousTotalCpuTimePerProcessId[stat.processId] || 0),
-        }),
-        {}
+      mapValues(
+        subProcessesStats.reduce(
+          (aggr, stat) => ({
+            ...aggr,
+            [groupByIteratee(stat)]:
+              (aggr[groupByIteratee(stat)] || 0) +
+              stat.totalCpuTime -
+              (previousTotalCpuTimePerProcessId[stat.processId] || 0),
+          }),
+          {}
+        ),
+        toPercentage
       );
 
     const cpuUsagePerCore = groupCpuUsage((stat) => stat.cpuNumber);
@@ -135,10 +141,6 @@ const pollCpuPerCoreUsage = (pidId) => {
     delete cpuUsagePerCore["-1"];
 
     const cpuUsagePerProcessName = groupCpuUsage((stat) => stat.processName);
-
-    const jsThreadUsage = cpuUsagePerProcessName[JS_THREAD_PROCESS_NAME];
-
-    const toPercentage = (value) => (value * 100) / TICKS_FOR_TIME_INTERVAL;
 
     const logCpuUsagePerCore = () =>
       console.log(
@@ -152,21 +154,11 @@ const pollCpuPerCoreUsage = (pidId) => {
           .join(" | ")
       );
 
-    const logCpuUsagePerProcessName = () =>
-      console.log(
-        Object.keys(cpuUsagePerProcessName)
-          .map(
-            (processName) =>
-              `${processName}: ${toPercentage(
-                cpuUsagePerProcessName[processName]
-              )}`
-          )
-          .join(" | ")
-      );
-
     if (!isFirstMeasure) {
-      // logCpuUsagePerCore();
-      console.log(toPercentage(jsThreadUsage));
+      dataCallback({
+        perName: cpuUsagePerProcessName,
+        perCpu: logCpuUsagePerCore,
+      });
     }
     isFirstMeasure = false;
 
@@ -207,8 +199,6 @@ const findReactNativeApps = async () => {
   }
 };
 
-// findReactNativeApps();
-// pollProcStats(pidId);
-// pollRamUsage(pidId);
-// pollFpsUsage(bundleId);
-pollCpuPerCoreUsage(pidId);
+pollCpuPerCoreUsage(pidId, ({ perName }) =>
+  console.log(perName[JS_THREAD_PROCESS_NAME])
+);
